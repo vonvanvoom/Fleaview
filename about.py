@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 APP_NAME = "Fleaview Manager"
 APP_VERSION = "1.0.0"
 APP_AUTHOR = "Von Van Vooom, 2026"
-APP_URL = "https://github.com/vonvanvoom/vvv.git"
+APP_URL = "https://github.com/vonvanvoom/Fleaview"
 APP_LICENSE = "MIT License"
 APP_DESCRIPTION = (
     "A standalone, keyboard-first file manager for Linux built with Python, "
