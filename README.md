@@ -5,6 +5,13 @@
 <h1 align="center">Fleaview</h1>
 
 <p align="center">
+  <a href="https://github.comvonvanvoom/Fleaview/releases"><img src="https://shields.iovonvanvoom/Fleaview?style=for-the-badge&color=89b4fa" alt="Latest Release" /></a>
+  <a href="https://github.comvonvanvoom/Fleaview/releases"><img src="https://shields.iovonvanvoom/Fleaview/total?style=for-the-badge&color=a6e3a1" alt="Total Downloads" /></a>
+  <img src="https://shields.io" alt="Linux" />
+  <img src="https://shields.io" alt="MIT License" />
+</p>
+
+<p align="center">
   A fast, standalone, keyboard-first file manager for Linux built with Python, PySide6, PyVista, and FFmpeg.
 </p>
 
