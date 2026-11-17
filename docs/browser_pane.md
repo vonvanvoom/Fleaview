@@ -273,10 +273,16 @@ class BrowserTab(QWidget):
         self.navigate(self.current_dir)
 
     def navigate(self, path):
-        if not os.path.exists(path):
+        if not path or not os.path.exists(path):
             return
         self.current_dir = os.path.abspath(path)
+        # Auto-enable hidden files if user navigates directly into a dot-folder (e.g. via Ctrl+L)
+        if any(part.startswith(".") for part in self.current_dir.split(os.sep) if part) and not self.show_hidden:
+            self.show_hidden = True
+            self.model.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot | QDir.AllDirs | QDir.Hidden | QDir.System)
         root_idx = self.model.index(self.current_dir)
+        if self.model.canFetchMore(root_idx):
+            self.model.fetchMore(root_idx)
         for v in (self.tree_view, self.list_view, self.icon_view, self.column_view):
             v.setRootIndex(root_idx)
         self.title_changed.emit(os.path.basename(self.current_dir) or "/")
@@ -290,7 +296,7 @@ class BrowserTab(QWidget):
         self.show_hidden = enabled
         base_flags = QDir.AllEntries | QDir.NoDotAndDotDot | QDir.AllDirs
         if enabled:
-            self.model.setFilter(base_flags | QDir.Hidden)
+            self.model.setFilter(base_flags | QDir.Hidden | QDir.System)
         else:
             self.model.setFilter(base_flags)
         self.refresh_view()
@@ -338,6 +344,7 @@ class BrowserTab(QWidget):
                 self.file_selected.emit(path)
 
     def _on_double_click(self, index):
+        index = index.siblingAtColumn(0)
         path = self.model.filePath(index)
         if os.path.isdir(path):
             self.navigate(path)
