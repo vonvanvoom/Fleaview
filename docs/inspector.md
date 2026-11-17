@@ -21,7 +21,7 @@ from pygments.lexers import get_lexer_for_filename, TextLexer
 from pygments.styles import get_style_by_name
 from pygments.util import ClassNotFound
 
-from PySide6.QtCore import Qt, QUrl, QEvent
+from PySide6.QtCore import Qt, QUrl, QEvent, QTimer
 from PySide6.QtGui import (
     QPixmap, QPainter, QColor, QFont, QImage,
     QSyntaxHighlighter, QTextCharFormat
@@ -192,10 +192,29 @@ class InspectorPane(QWidget):
         self.zoom_lbl = QLabel("Fit")
         self.zoom_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+        self.prev_img_btn = QPushButton("◀")
+        self.prev_img_btn.setFixedWidth(30)
+        self.prev_img_btn.setToolTip("Previous Image (Left Arrow)")
+        self.prev_img_btn.clicked.connect(lambda: self.step_slideshow(-1))
+
+        self.next_img_btn = QPushButton("▶")
+        self.next_img_btn.setFixedWidth(30)
+        self.next_img_btn.setToolTip("Next Image (Right Arrow)")
+        self.next_img_btn.clicked.connect(lambda: self.step_slideshow(1))
+
+        self.slide_btn = QPushButton("Slideshow (4s)")
+        self.slide_btn.setCheckable(True)
+        self.slide_btn.setToolTip("Auto-advance images every 4 seconds (Space)")
+        self.slide_btn.toggled.connect(self.toggle_slideshow)
+
         zoom_bar.addWidget(self.zoom_out_btn)
         zoom_bar.addWidget(self.zoom_in_btn)
         zoom_bar.addWidget(self.zoom_100_btn)
         zoom_bar.addWidget(self.zoom_fit_btn)
+        zoom_bar.addSpacing(8)
+        zoom_bar.addWidget(self.prev_img_btn)
+        zoom_bar.addWidget(self.slide_btn)
+        zoom_bar.addWidget(self.next_img_btn)
         zoom_bar.addStretch()
         zoom_bar.addWidget(self.zoom_lbl)
         img_layout.addLayout(zoom_bar)
@@ -214,6 +233,11 @@ class InspectorPane(QWidget):
         self.current_pixmap = None
         self.zoom_factor = 1.0
         self.fit_mode = True
+        self.slide_images = []
+        self.slide_index = -1
+        self.slide_timer = QTimer(self)
+        self.slide_timer.setInterval(4000)
+        self.slide_timer.timeout.connect(lambda: self.step_slideshow(1, from_timer=True))
         self.stack.addWidget(self.img_page)
 
         # Page 1: Text / Code / Office / Archive / Hex View
@@ -306,6 +330,41 @@ class InspectorPane(QWidget):
                 self.img_scroll.viewport().setCursor(Qt.OpenHandCursor)
                 return True
         return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event):
+        if self.stack.currentWidget() == self.img_page and self.slide_images:
+            if event.key() == Qt.Key_Right:
+                self.step_slideshow(1)
+                event.accept()
+                return
+            elif event.key() == Qt.Key_Left:
+                self.step_slideshow(-1)
+                event.accept()
+                return
+            elif event.key() == Qt.Key_Space:
+                self.slide_btn.toggle()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def toggle_slideshow(self, active):
+        if active and len(self.slide_images) > 1:
+            self.slide_btn.setText("Stop Slide")
+            self.slide_timer.start()
+            self.img_scroll.setFocus()
+        else:
+            self.slide_btn.setChecked(False)
+            self.slide_btn.setText("Slideshow (4s)")
+            self.slide_timer.stop()
+
+    def step_slideshow(self, delta, from_timer=False):
+        if not self.slide_images:
+            return
+        self.slide_index = (self.slide_index + delta) % len(self.slide_images)
+        next_path = self.slide_images[self.slide_index]
+        if not from_timer and self.slide_timer.isActive():
+            self.slide_timer.start()
+        self.inspect_path(next_path, _from_slideshow=True)
 
     def wheelEvent(self, event):
         if self.stack.currentWidget() == self.img_page and event.modifiers() == Qt.ControlModifier:
@@ -406,9 +465,12 @@ class InspectorPane(QWidget):
         ]
         self.text_view.setPlainText("\n".join(matched))
 
-    def inspect_path(self, path, force_hex=False, show_treemap=False):
+    def inspect_path(self, path, force_hex=False, show_treemap=False, _from_slideshow=False):
         if not path or not os.path.exists(path):
             return
+
+        if not _from_slideshow and self.slide_timer.isActive():
+            self.slide_btn.setChecked(False)
 
         self.media_player.stop()
         self.media_player.setSource(QUrl())
@@ -449,6 +511,19 @@ class InspectorPane(QWidget):
         arch_exts = (".zip", ".tar", ".gz", ".tgz")
 
         if ext in img_exts:
+            if not _from_slideshow:
+                folder = os.path.dirname(os.path.abspath(path))
+                try:
+                    self.slide_images = [
+                        os.path.join(folder, name)
+                        for name in sorted(os.listdir(folder), key=str.lower)
+                        if os.path.splitext(name)[1].lower() in img_exts
+                    ]
+                    abs_p = os.path.abspath(path)
+                    self.slide_index = self.slide_images.index(abs_p) if abs_p in self.slide_images else 0
+                except OSError:
+                    self.slide_images = [path]
+                    self.slide_index = 0
             pix = QPixmap(path)
             info = "Path: %s\nDimensions: %dx%d px\nSize: %s bytes" % (
                 path, pix.width(), pix.height(), format(stat.st_size, ",")

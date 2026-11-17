@@ -145,6 +145,7 @@ class FleaMainWindow(QMainWindow):
         self.hidden_act.toggled.connect(self.toggle_hidden_files)
         view_menu.addAction(self.hidden_act)
         view_menu.addAction(QAction("&Refresh", self, shortcut="F5", triggered=self.refresh_active_browser))
+        view_menu.addAction(QAction("Toggle Image &Slideshow (4s)", self, shortcut="F6", triggered=lambda: self.inspector.slide_btn.toggle()))
         view_menu.addSeparator()
         view_menu.addAction(QAction("Split Side-by-Side", self, shortcut=self.hotkeys["split_horizontal"], triggered=lambda: self.workspace.toggle_split(Qt.Horizontal)))
         view_menu.addAction(QAction("Split Stacked", self, shortcut=self.hotkeys["split_vertical"], triggered=lambda: self.workspace.toggle_split(Qt.Vertical)))
