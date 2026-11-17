@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Fleaview Manager"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_AUTHOR = "Von Van Vooom, 2026"
 APP_URL = "https://github.com/vonvanvoom/Fleaview"
 APP_LICENSE = "MIT License"
@@ -89,6 +89,8 @@ class AboutDialog(QDialog):
             "Ctrl+H            Inspect File as Hex\n"
             "Ctrl+D            Folder Space Treemap\n"
             "Alt+Shift+F       Filter Lines in Preview\n"
+            "F6 / Space        Toggle Image Slideshow (4s)\n"
+            "Ctrl+H / F5       Show Hidden Files / Refresh\n"
             "F2 / Ctrl+Shift+R Rename / Batch Rename (Regex)\n"
             "Del               Move to Trash"
         )
