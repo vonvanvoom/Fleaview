@@ -1,0 +1,23 @@
+# 1. Install system tools on Arch/Omarchy
+sudo pacman -S --needed python python-pip ffmpeg p7zip
+
+# 2. Create venv, install dependencies, and compile
+python -m venv fvenv
+source fvenv/bin/activate
+pip install PySide6 pyvista pyvistaqt trimesh numpy py7zr rarfile pymupdf python-docx openpyxl lxml pygments send2trash pyinstaller
+
+python -m PyInstaller --onefile --windowed --name flea-py \
+  --icon=icon.png \
+  --add-data "icon.png:." \
+  --collect-all pyvista \
+  --collect-all pyvistaqt \
+  --collect-all vtk \
+  --collect-all pygments \
+  --hidden-import=pymupdf \
+  --hidden-import=docx \
+  --hidden-import=openpyxl \
+  --hidden-import=py7zr \
+  --hidden-import=rarfile \
+  --hidden-import=lxml \
+  --hidden-import=send2trash \
+  main.py

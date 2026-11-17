@@ -1,0 +1,396 @@
+import os
+import re
+import zipfile
+import tarfile
+import numpy as np
+import trimesh
+import pymupdf as fitz  # PyMuPDF for PDF rendering
+import docx  # python-docx for .docx
+import openpyxl  # openpyxl for .xlsx
+import pyvista as pv
+from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat
+from pygments import lex
+from pygments.lexers import get_lexer_for_filename, TextLexer
+from pygments.styles import get_style_by_name
+from pygments.util import ClassNotFound
+from pyvistaqt import QtInteractor
+from PySide6.QtGui import QImage
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QPixmap, QPainter, QColor, QFont
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QStackedWidget, QTextEdit, QLabel,
+    QPushButton, QHBoxLayout, QLineEdit, QFrame, QSlider
+)
+
+
+class DiskTreemapWidget(QWidget):
+    """Visualizes folder/drive space usage as proportional blocks."""
+    def __init__(self):
+        super().__init__()
+        self.items = []  # list of (name, size, path)
+
+    def scan_folder(self, folder_path):
+        entries = []
+        try:
+            for name in os.listdir(folder_path):
+                full = os.path.join(folder_path, name)
+                size = self._get_size(full)
+                if size > 0:
+                    entries.append((name, size, full))
+        except PermissionError:
+            pass
+        entries.sort(key=lambda x: x[1], reverse=True)
+        self.items = entries[:25]
+        self.update()
+
+    def _get_size(self, path):
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        total = 0
+        for root, _, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+        return total
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        rect = self.rect()
+        painter.fillRect(rect, QColor("#1e1e2e"))
+        if not self.items:
+            painter.setPen(Qt.white)
+            painter.drawText(rect, Qt.AlignCenter, "No data or empty folder")
+            return
+
+        total = sum(x[1] for x in self.items)
+        y = 0
+        palette = ["#89b4fa", "#a6e3a1", "#f9e2af", "#fab387", "#cba6f7", "#f38ba8"]
+        for i, (name, size, _) in enumerate(self.items):
+            h = max(18, int((size / total) * rect.height()))
+            painter.fillRect(4, y + 2, rect.width() - 8, h - 4, QColor(palette[i % len(palette)]))
+            painter.setPen(QColor("#11111b"))
+            mb = size / (1024 * 1024)
+            painter.drawText(10, y + 16, f"{name} ({mb:.1f} MB)")
+            y += h
+            if y >= rect.height():
+                break
+
+class PygmentsHighlighter(QSyntaxHighlighter):
+    """Applies Pygments syntax highlighting to QTextEdit."""
+    def __init__(self, document):
+        super().__init__(document)
+        self.lexer = TextLexer()
+        self.style = get_style_by_name("monokai")
+        self._formats = {}
+
+    def set_file(self, filename):
+        try:
+            self.lexer = get_lexer_for_filename(filename, stripall=False)
+        except ClassNotFound:
+            self.lexer = TextLexer()
+        self.rehighlight()
+
+    def _get_format(self, token):
+        if token in self._formats:
+            return self._formats[token]
+
+        fmt = QTextCharFormat()
+        style_def = self.style.style_for_token(token)
+        if style_def.get("color"):
+            fmt.setForeground(QColor(f"#{style_def['color']}"))
+        if style_def.get("bold"):
+            fmt.setFontWeight(QFont.Bold)
+        if style_def.get("italic"):
+            fmt.setFontItalic(True)
+
+        self._formats[token] = fmt
+        return fmt
+
+    def highlightBlock(self, text):
+        # Skip line number prefix ("  12 | ") when lexing
+        offset = 0
+        code_part = text
+        if len(text) >= 7 and text[4:7] == " | ":
+            offset = 7
+            code_part = text[7:]
+            # Color the line-number gutter in muted gray
+            gutter_fmt = QTextCharFormat()
+            gutter_fmt.setForeground(QColor("#6c7086"))
+            self.setFormat(0, 7, gutter_fmt)
+
+        pos = offset
+        for token, value in lex(code_part, self.lexer):
+            length = len(value)
+            if length > 0:
+                self.setFormat(pos, length, self._get_format(token))
+                pos += length
+
+
+class InspectorPane(QWidget):
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # Top Metadata Drawer (Toggleable details under toolbar)
+        self.meta_bar = QPushButton("▸ File Details")
+        self.meta_bar.setCheckable(True)
+        self.meta_bar.clicked.connect(self.toggle_details)
+        self.meta_panel = QLabel("")
+        self.meta_panel.setWordWrap(True)
+        self.meta_panel.setStyleSheet("background: #181825; color: #cdd6f4; padding: 6px; border-radius: 4px;")
+        self.meta_panel.hide()
+
+        # Search-in-preview bar (Alt+Shift+F)
+        self.filter_bar = QLineEdit()
+        self.filter_bar.setPlaceholderText("Filter lines in preview (Alt+Shift+F)...")
+        self.filter_bar.textChanged.connect(self._filter_text_lines)
+        self.filter_bar.hide()
+
+        layout.addWidget(self.meta_bar)
+        layout.addWidget(self.meta_panel)
+        layout.addWidget(self.filter_bar)
+
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack)
+
+        # Page 0: Image Preview
+        self.img_label = QLabel("Select a file to inspect")
+        self.img_label.setAlignment(Qt.AlignCenter)
+        self.stack.addWidget(self.img_label)
+
+        # Page 1: Text / Code / Archive Listing / Hex View
+        self.text_view = QTextEdit()
+        self.text_view.setReadOnly(True)
+        self.text_view.setFont(QFont("Monospace", 10))
+        self.text_view.setStyleSheet("QTextEdit { background: #1e1e2e; color: #cdd6f4; border: none; }")
+        self.highlighter = PygmentsHighlighter(self.text_view.document())
+        self.raw_text = ""
+        self.stack.addWidget(self.text_view)
+
+        # Page 2: Interactive 3D PyVista Viewport (.stl, .obj, .ply, .gltf, .3mf, .gcode)
+        self.plotter_frame = QFrame()
+        p_layout = QVBoxLayout(self.plotter_frame)
+        p_layout.setContentsMargins(0, 0, 0, 0)
+        self.plotter = QtInteractor(self.plotter_frame)
+        self.plotter.set_background("#1e1e2e")
+        p_layout.addWidget(self.plotter.interactor)
+        self.stack.addWidget(self.plotter_frame)
+
+        # Page 3: Disk Treemap
+        self.treemap = DiskTreemapWidget()
+        self.stack.addWidget(self.treemap)
+
+    def toggle_details(self, checked):
+        self.meta_bar.setText("▾ File Details" if checked else "▸ File Details")
+        self.meta_panel.setVisible(checked)
+
+    def _filter_text_lines(self, query):
+        if not query:
+            self.text_view.setPlainText(self.raw_text)
+            return
+        matched = [
+            f"{idx + 1}: {line}"
+            for idx, line in enumerate(self.raw_text.splitlines())
+            if query.lower() in line.lower()
+        ]
+        self.text_view.setPlainText("\n".join(matched))
+
+    def inspect_path(self, path, force_hex=False, show_treemap=False):
+        self.media_player.stop()
+        if not path or not os.path.exists(path):
+            return
+
+        stat = os.stat(path)
+        self.meta_panel.setText(f"Path: {path}\nSize: {stat.st_size:,} bytes")
+
+        if os.path.isdir(path):
+            if show_treemap:
+                self.treemap.scan_folder(path)
+                self.stack.setCurrentWidget(self.treemap)
+            else:
+                items = sorted(os.listdir(path))
+                self.raw_text = f"Folder: {path}\nTotal items: {len(items)}\n\n" + "\n".join(items[:300])
+                self.text_view.setPlainText(self.raw_text)
+                self.stack.setCurrentWidget(self.text_view)
+            return
+
+    def _toggle_playback(self):
+        if self.media_player.playbackState() == QMediaPlayer.PlayingState:
+            self.media_player.pause()
+        else:
+            self.media_player.play()
+
+        if force_hex:
+            with open(path, "rb") as f:
+                data = f.read(4096)
+            hex_lines = []
+            for i in range(0, len(data), 16):
+                chunk = data[i:i + 16]
+                hex_part = " ".join(f"{b:02x}" for b in chunk)
+                asc_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+                hex_lines.append(f"{i:08x}  {hex_part:<48}  {asc_part}")
+            self.raw_text = "\n".join(hex_lines)
+            self.text_view.setPlainText(self.raw_text)
+            self.stack.setCurrentWidget(self.text_view)
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+
+        # 1. Images & SVG
+        if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}:
+            pix = QPixmap(path)
+            self.meta_panel.setText(f"Path: {path}\nDimensions: {pix.width()}x{pix.height()} px\nSize: {stat.st_size:,} bytes")
+            target_w = max(300, self.stack.width() - 20)
+            target_h = max(300, self.stack.height() - 20)
+            self.img_label.setPixmap(pix.scaled(500, 500, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.stack.setCurrentWidget(self.img_label)
+
+        # 1b. Audio & Video Playback (.mp4, .mkv, .webm, .avi, .mov, .mp3, .wav, .ogg, .flac)
+        elif ext in {".mp4", ".mkv", ".webm", ".avi", ".mov", ".mp3", ".wav", ".ogg", ".flac", ".m4a"}:
+            self.media_player.setSource(QUrl.fromLocalFile(path))
+            self.audio_output.setVolume(0.75)
+            self.stack.setCurrentWidget(self.media_page)
+            self.media_player.play()
+
+        # 2. 3D Models (.stl, .obj, .ply, .gltf, .glb, .3mf, .dae)
+        elif ext in {".stl", ".obj", ".ply", ".gltf", ".glb", ".3mf", ".dae"}:
+            self.plotter.clear()
+            try:
+                loaded = trimesh.load(path, force="scene" if ext == ".3mf" else None)
+                if isinstance(loaded, trimesh.Scene):
+                    for name, geom in loaded.geometry.items():
+                        if len(geom.vertices) > 0:
+                            pv_mesh = pv.wrap(geom)
+                            self.plotter.add_mesh(
+                                pv_mesh,
+                                color="#6c8ebf",
+                                opacity=0.9,
+                                smooth_shading=True,
+                                show_edges=False,
+                            )
+                else:
+                    pv_mesh = pv.wrap(loaded)
+                    self.plotter.add_mesh(
+                        pv_mesh,
+                        color="#6c8ebf",
+                        opacity=0.9,
+                        smooth_shading=True,
+                    )
+                self.plotter.add_axes()
+                self.plotter.reset_camera()
+                self.stack.setCurrentWidget(self.plotter_frame)
+            except Exception as e:
+                self.text_view.setPlainText(f"3D Load Error: {e}")
+                self.stack.setCurrentWidget(self.text_view)
+
+
+        # 3. G-code Toolpath 3D Preview
+        elif ext == ".gcode":
+            self._render_gcode(path)
+
+        # 4. Archives Preview (zip, tar)
+        elif ext in {".zip", ".tar", ".gz", ".tgz"}:
+            lines = [f"Archive Contents: {os.path.basename(path)}\n"]
+            if ext == ".zip":
+                with zipfile.ZipFile(path, "r") as zf:
+                    lines.extend(zf.namelist()[:300])
+            else:
+                with tarfile.open(path, "r:*") as tf:
+                    lines.extend(tf.getnames()[:300])
+            self.raw_text = "\n".join(lines)
+            self.text_view.setPlainText(self.raw_text)
+            self.stack.setCurrentWidget(self.text_view)
+
+        # 4b. PDF Document Preview (Renders Page 1 + Page Count)
+        elif ext == ".pdf":
+            try:
+                doc = fitz.open(path)
+                page = doc.load_page(0)
+                pix_fitz = page.get_pixmap(dpi=130)
+                img_fmt = QImage.Format_RGBA8888 if pix_fitz.alpha else QImage.Format_RGB888
+                qimg = QImage(pix_fitz.samples, pix_fitz.width, pix_fitz.height, pix_fitz.stride, img_fmt)
+                self.meta_panel.setText(f"Path: {path}\nPDF Pages: {len(doc)}\nSize: {stat.st_size:,} bytes")
+                self.img_label.setPixmap(QPixmap.fromImage(qimg).scaled(520, 680, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.stack.setCurrentWidget(self.img_label)
+            except Exception as e:
+                self.text_view.setPlainText(f"PDF Preview Error: {e}")
+                self.stack.setCurrentWidget(self.text_view)
+
+        # 4c. Word (.docx) Text Preview
+        elif ext == ".docx":
+            try:
+                document = docx.Document(path)
+                paragraphs = [p.text for p in document.paragraphs if p.text.strip()]
+                self.raw_text = "\n\n".join(paragraphs[:200])
+                self.text_view.setPlainText(self.raw_text)
+                self.stack.setCurrentWidget(self.text_view)
+            except Exception as e:
+                self.text_view.setPlainText(f"DOCX Preview Error: {e}")
+                self.stack.setCurrentWidget(self.text_view)
+
+        # 4d. Excel (.xlsx) Sheet Preview
+        elif ext == ".xlsx":
+            try:
+                wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+                lines = [f"Sheets: {', '.join(wb.sheetnames)}\n"]
+                sheet = wb.active
+                for row in sheet.iter_rows(max_row=100, values_only=True):
+                    row_str = " | ".join(str(cell) if cell is not None else "" for cell in row)
+                    if row_str.strip(" |"):
+                        lines.append(row_str)
+                self.raw_text = "\n".join(lines)
+                self.text_view.setPlainText(self.raw_text)
+                self.stack.setCurrentWidget(self.text_view)
+            except Exception as e:
+                self.text_view.setPlainText(f"XLSX Preview Error: {e}")
+                self.stack.setCurrentWidget(self.text_view)
+
+        # 5. Text / Code Preview with Line Numbers
+        else:
+            with open(path, "r", errors="ignore") as f:
+                self.raw_text = f.read(32000)
+            self.highlighter.set_file(path)
+            numbered = "\n".join(f"{i + 1:4d} | {line}" for i, line in enumerate(self.raw_text.splitlines()))
+            self.text_view.setPlainText(numbered)
+            self.stack.setCurrentWidget(self.text_view)
+            
+    def _render_gcode(self, path):
+        self.plotter.clear()
+        points = []
+        x = y = z = 0.0
+        coord_re = re.compile(r"([XYZ])([-+]?\d*\.?\d+)")
+        with open(path, "r", errors="ignore") as f:
+            for line in f:
+                if line.startswith(("G0 ", "G1 ")):
+                    for axis, val in coord_re.findall(line):
+                        v = float(val)
+                        if axis == "X":
+                            x = v
+                        elif axis == "Y":
+                            y = v
+                        elif axis == "Z":
+                            z = v
+                    points.append([x, y, z])
+
+        if len(points) > 1:
+            pts = np.array(points)
+            poly = pv.lines_from_points(pts)
+            # Attach Z-height values as scalars for layer-by-layer gradient coloring
+            poly["Layer Height (Z)"] = pts[:, 2]
+            self.plotter.add_mesh(
+                poly,
+                scalars="Layer Height (Z)",
+                cmap="ocean",          # Deep blue at base -> muted teal/cyan at top
+                line_width=1.1,
+                opacity=0.8,
+                show_scalar_bar=False, # Keeps viewport clean without large legend bar
+            )
+            self.plotter.add_axes()
+            self.plotter.reset_camera()
+        self.stack.setCurrentWidget(self.plotter_frame)
+

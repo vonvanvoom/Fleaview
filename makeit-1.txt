@@ -1,0 +1,27 @@
+source ~/Base/Base1/fvenv/bin/activate
+cd ~/Base/Base1/FleaLike
+
+#make the file into an distributable app.
+
+python3 -m PyInstaller --onefile --windowed --name FileView-1 \
+  --icon=icon.png \
+  --add-data "icon.png:." \
+  --collect-all pyvista \
+  --collect-all pyvistaqt \
+  --collect-all vtk \
+  --collect-all pygments \
+  --hidden-import=pymupdf \
+  --hidden-import=docx \
+  --hidden-import=openpyxl \
+  --hidden-import=py7zr \
+  --hidden-import=rarfile \
+  --hidden-import=lxml \
+  --hidden-import=send2trash \
+  main.py
+
+
+#additional suggestion.
+
+
+# Optional: Save a clean source code backup archive
+tar --exclude='build' --exclude='dist' --exclude='__pycache__' -czf ~/FleaLike_source_backup.tar.gz .

@@ -1,0 +1,6 @@
+sudo apt install ffmpeg libxcb-cursor0
+
+
+modules needed
+
+pip install pyinstaller pymupdf python-docx openpyxl py7zr rarfile trimesh pyvista pyvistaqt
