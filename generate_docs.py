@@ -12,6 +12,7 @@ MODULES = [
     ("inspector.py", "3D Viewport (.stl/.3mf/.gcode), Syntax Code, PDF, Office, Hex & Media Player"),
     ("archive_fs.py", "Nested Archive Virtual Filesystem (.zip/.7z/.rar/.tar/.cab)"),
     ("media_tools.py", "FFmpeg Image & Video Conversion, Rotate, Flip & Resize Studio"),
+    ("duplicate_finder.py", "SHA-256 Duplicate File Scanner & Safe Trash Cleanup"),
     ("batch_rename.py", "Live-Preview Batch File Renamer with Regex & Counters"),
     ("about.py", "About Dialog, Logo Banner & Shortcut Reference"),
 ]

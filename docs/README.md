@@ -25,6 +25,7 @@ Fleaview is a standalone, keyboard-first desktop file manager inspired by Flea a
 - **[inspector.py](./inspector.md)** — 3D Viewport (.stl/.3mf/.gcode), Syntax Code, PDF, Office, Hex & Media Player
 - **[archive_fs.py](./archive_fs.md)** — Nested Archive Virtual Filesystem (.zip/.7z/.rar/.tar/.cab)
 - **[media_tools.py](./media_tools.md)** — FFmpeg Image & Video Conversion, Rotate, Flip & Resize Studio
+- **[duplicate_finder.py](./duplicate_finder.md)** — SHA-256 Duplicate File Scanner & Safe Trash Cleanup
 - **[batch_rename.py](./batch_rename.md)** — Live-Preview Batch File Renamer with Regex & Counters
 - **[about.py](./about.md)** — About Dialog, Logo Banner & Shortcut Reference
 

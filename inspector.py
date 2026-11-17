@@ -14,16 +14,17 @@ from pygments.lexers import get_lexer_for_filename, TextLexer
 from pygments.styles import get_style_by_name
 from pygments.util import ClassNotFound
 
-from PySide6.QtCore import Qt, QUrl, QEvent, QTimer
+from PySide6.QtCore import Qt, QUrl, QEvent, QTimer, Signal, QRect
 from PySide6.QtGui import (
     QPixmap, QPainter, QColor, QFont, QImage,
-    QSyntaxHighlighter, QTextCharFormat
+    QSyntaxHighlighter, QTextCharFormat, QKeySequence, QShortcut
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
-    QTextEdit, QLabel, QPushButton, QLineEdit, QFrame, QSlider, QScrollArea
+    QTextEdit, QLabel, QPushButton, QLineEdit, QFrame, QSlider,
+    QScrollArea, QSpinBox, QMessageBox
 )
 
 
@@ -78,10 +79,14 @@ class PygmentsHighlighter(QSyntaxHighlighter):
 
 
 class DiskTreemapWidget(QWidget):
-    """Visualizes folder/drive space usage as proportional blocks."""
+    """Interactive folder/drive space treemap with click-to-drill-down."""
+    folder_clicked = Signal(str)
+
     def __init__(self):
         super().__init__()
         self.items = []
+        self.hit_boxes = []
+        self.setCursor(Qt.PointingHandCursor)
 
     def scan_folder(self, folder_path):
         entries = []
@@ -93,7 +98,7 @@ class DiskTreemapWidget(QWidget):
                     entries.append((name, size, full))
         except PermissionError:
             pass
-        entries.sort(key=lambda x: x, reverse=True)
+        entries.sort(key=lambda x: x[1], reverse=True)
         self.items = entries[:25]
         self.update()
 
@@ -109,30 +114,46 @@ class DiskTreemapWidget(QWidget):
                     pass
         return total
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            pos = event.position().toPoint()
+            for rect, full_path in self.hit_boxes:
+                if rect.contains(pos) and os.path.isdir(full_path):
+                    self.scan_folder(full_path)
+                    self.folder_clicked.emit(full_path)
+                    return
+        super().mousePressEvent(event)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         rect = self.rect()
         painter.fillRect(rect, QColor("#1e1e2e"))
+        self.hit_boxes = []
         if not self.items:
             painter.setPen(Qt.white)
             painter.drawText(rect, Qt.AlignCenter, "No data or empty folder")
             return
 
-        total = sum(x for x in self.items)
+        total = sum(x[1] for x in self.items)
         y = 0
         palette = ["#89b4fa", "#a6e3a1", "#f9e2af", "#fab387", "#cba6f7", "#f38ba8"]
-        for i, (name, size, _) in enumerate(self.items):
-            h = max(18, int((size / total) * rect.height()))
-            painter.fillRect(4, y + 2, rect.width() - 8, h - 4, QColor(palette[i % len(palette)]))
+        for i, (name, size, full_path) in enumerate(self.items):
+            h = max(20, int((size / total) * rect.height()))
+            box = QRect(4, y + 2, rect.width() - 8, h - 4)
+            self.hit_boxes.append((box, full_path))
+            painter.fillRect(box, QColor(palette[i % len(palette)]))
             painter.setPen(QColor("#11111b"))
             mb = size / (1024 * 1024)
-            painter.drawText(10, y + 16, "%s (%.1f MB)" % (name, mb))
+            prefix = "📁 " if os.path.isdir(full_path) else ""
+            painter.drawText(10, y + 16, "%s%s (%.1f MB)" % (prefix, name, mb))
             y += h
             if y >= rect.height():
                 break
 
 
 class InspectorPane(QWidget):
+    navigate_requested = Signal(str)
+
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
@@ -158,56 +179,68 @@ class InspectorPane(QWidget):
         self.stack = QStackedWidget()
         layout.addWidget(self.stack)
 
-        # Page 0: Image & PDF Preview with Zoom Controls
+        # Page 0: Image & Multi-Page PDF Preview with Zoom Controls
         self.img_page = QWidget()
         img_layout = QVBoxLayout(self.img_page)
         img_layout.setContentsMargins(0, 0, 0, 0)
 
         zoom_bar = QHBoxLayout()
         self.zoom_out_btn = QPushButton("−")
-        self.zoom_out_btn.setFixedWidth(32)
-        self.zoom_out_btn.setToolTip("Zoom Out (Ctrl + Scroll Down)")
+        self.zoom_out_btn.setFixedWidth(30)
+        self.zoom_out_btn.setToolTip("Zoom Out")
         self.zoom_out_btn.clicked.connect(lambda: self._adjust_zoom(0.8))
 
         self.zoom_in_btn = QPushButton("+")
-        self.zoom_in_btn.setFixedWidth(32)
-        self.zoom_in_btn.setToolTip("Zoom In (Ctrl + Scroll Up)")
+        self.zoom_in_btn.setFixedWidth(30)
+        self.zoom_in_btn.setToolTip("Zoom In")
         self.zoom_in_btn.clicked.connect(lambda: self._adjust_zoom(1.25))
 
         self.zoom_100_btn = QPushButton("100%")
-        self.zoom_100_btn.setFixedWidth(50)
+        self.zoom_100_btn.setFixedWidth(48)
         self.zoom_100_btn.clicked.connect(self._zoom_actual)
 
         self.zoom_fit_btn = QPushButton("Fit")
-        self.zoom_fit_btn.setFixedWidth(45)
+        self.zoom_fit_btn.setFixedWidth(40)
         self.zoom_fit_btn.clicked.connect(self._zoom_fit)
 
-        self.zoom_lbl = QLabel("Fit")
-        self.zoom_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
         self.prev_img_btn = QPushButton("◀")
-        self.prev_img_btn.setFixedWidth(30)
-        self.prev_img_btn.setToolTip("Previous Image (Left Arrow)")
+        self.prev_img_btn.setFixedWidth(28)
         self.prev_img_btn.clicked.connect(lambda: self.step_slideshow(-1))
 
         self.next_img_btn = QPushButton("▶")
-        self.next_img_btn.setFixedWidth(30)
-        self.next_img_btn.setToolTip("Next Image (Right Arrow)")
+        self.next_img_btn.setFixedWidth(28)
         self.next_img_btn.clicked.connect(lambda: self.step_slideshow(1))
 
-        self.slide_btn = QPushButton("Slideshow (4s)")
+        self.slide_btn = QPushButton("Slide (4s)")
         self.slide_btn.setCheckable(True)
-        self.slide_btn.setToolTip("Auto-advance images every 4 seconds (Space)")
         self.slide_btn.toggled.connect(self.toggle_slideshow)
+
+        # PDF Page Controls (Visible only for PDFs)
+        self.pdf_prev_btn = QPushButton("◀ Pg")
+        self.pdf_prev_btn.clicked.connect(lambda: self._step_pdf_page(-1))
+        self.pdf_page_spin = QSpinBox()
+        self.pdf_page_spin.setMinimum(1)
+        self.pdf_page_spin.valueChanged.connect(self._render_pdf_page)
+        self.pdf_total_lbl = QLabel("/ 1")
+        self.pdf_next_btn = QPushButton("Pg ▶")
+        self.pdf_next_btn.clicked.connect(lambda: self._step_pdf_page(1))
+        self.pdf_widgets = (self.pdf_prev_btn, self.pdf_page_spin, self.pdf_total_lbl, self.pdf_next_btn)
+        for w in self.pdf_widgets:
+            w.hide()
+
+        self.zoom_lbl = QLabel("Fit")
+        self.zoom_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         zoom_bar.addWidget(self.zoom_out_btn)
         zoom_bar.addWidget(self.zoom_in_btn)
         zoom_bar.addWidget(self.zoom_100_btn)
         zoom_bar.addWidget(self.zoom_fit_btn)
-        zoom_bar.addSpacing(8)
+        zoom_bar.addSpacing(6)
         zoom_bar.addWidget(self.prev_img_btn)
         zoom_bar.addWidget(self.slide_btn)
         zoom_bar.addWidget(self.next_img_btn)
+        for w in self.pdf_widgets:
+            zoom_bar.addWidget(w)
         zoom_bar.addStretch()
         zoom_bar.addWidget(self.zoom_lbl)
         img_layout.addLayout(zoom_bar)
@@ -226,6 +259,7 @@ class InspectorPane(QWidget):
         self.current_pixmap = None
         self.zoom_factor = 1.0
         self.fit_mode = True
+        self.pdf_doc = None
         self.slide_images = []
         self.slide_index = -1
         self.slide_timer = QTimer(self)
@@ -233,29 +267,79 @@ class InspectorPane(QWidget):
         self.slide_timer.timeout.connect(lambda: self.step_slideshow(1, from_timer=True))
         self.stack.addWidget(self.img_page)
 
-        # Page 1: Text / Code / Office / Archive / Hex View
+        # Page 1: Syntax-Highlighted Code & Inline Quick-Editor
+        self.text_page = QWidget()
+        t_layout = QVBoxLayout(self.text_page)
+        t_layout.setContentsMargins(0, 0, 0, 0)
+
+        code_bar = QHBoxLayout()
+        self.edit_mode_btn = QPushButton("Edit File")
+        self.edit_mode_btn.setCheckable(True)
+        self.edit_mode_btn.toggled.connect(self._toggle_code_edit)
+
+        self.save_code_btn = QPushButton("Save (Ctrl+S)")
+        self.save_code_btn.setEnabled(False)
+        self.save_code_btn.clicked.connect(self._save_code_file)
+
+        self.code_status_lbl = QLabel("Read-Only")
+        code_bar.addWidget(self.edit_mode_btn)
+        code_bar.addWidget(self.save_code_btn)
+        code_bar.addStretch()
+        code_bar.addWidget(self.code_status_lbl)
+        t_layout.addLayout(code_bar)
+
         self.text_view = QTextEdit()
         self.text_view.setReadOnly(True)
         self.text_view.setFont(QFont("Monospace", 10))
         self.text_view.setStyleSheet("QTextEdit { background: #1e1e2e; color: #cdd6f4; border: none; }")
         self.highlighter = PygmentsHighlighter(self.text_view.document())
         self.raw_text = ""
-        self.stack.addWidget(self.text_view)
+        self.current_text_path = None
+        self.is_editable_text = False
+        t_layout.addWidget(self.text_view)
 
-        # Page 2: Interactive 3D PyVista Viewport
+        save_sc = QShortcut(QKeySequence("Ctrl+S"), self.text_page)
+        save_sc.activated.connect(self._save_code_file)
+        self.stack.addWidget(self.text_page)
+
+        # Page 2: Interactive 3D PyVista Viewport with Wireframe & Bounding Box
         self.plotter_frame = QFrame()
         p_layout = QVBoxLayout(self.plotter_frame)
         p_layout.setContentsMargins(0, 0, 0, 0)
+
+        bar_3d = QHBoxLayout()
+        self.wireframe_btn = QPushButton("Wireframe")
+        self.wireframe_btn.setCheckable(True)
+        self.wireframe_btn.toggled.connect(self._toggle_3d_wireframe)
+
+        self.bbox_btn = QPushButton("Bounding Box")
+        self.bbox_btn.setCheckable(True)
+        self.bbox_btn.toggled.connect(self._toggle_3d_bbox)
+
+        self.reset_cam_btn = QPushButton("Reset View")
+        self.reset_cam_btn.clicked.connect(lambda: self.plotter.reset_camera())
+
+        self.dims_3d_lbl = QLabel("")
+        bar_3d.addWidget(self.wireframe_btn)
+        bar_3d.addWidget(self.bbox_btn)
+        bar_3d.addWidget(self.reset_cam_btn)
+        bar_3d.addStretch()
+        bar_3d.addWidget(self.dims_3d_lbl)
+        p_layout.addLayout(bar_3d)
+
         self.plotter = QtInteractor(self.plotter_frame)
         self.plotter.set_background("#1e1e2e")
         p_layout.addWidget(self.plotter.interactor)
+        self.mesh_actors = []
+        self.bbox_actor = None
         self.stack.addWidget(self.plotter_frame)
 
-        # Page 3: Disk Treemap
+        # Page 3: Interactive Disk Treemap
         self.treemap = DiskTreemapWidget()
+        self.treemap.folder_clicked.connect(self.navigate_requested.emit)
         self.stack.addWidget(self.treemap)
 
-        # Page 4: Audio & Video Preview Player with Loop Toggle
+        # Page 4: Audio & Video Preview Player
         self.media_page = QWidget()
         m_layout = QVBoxLayout(self.media_page)
         m_layout.setContentsMargins(0, 0, 0, 0)
@@ -295,6 +379,65 @@ class InspectorPane(QWidget):
         m_layout.addWidget(self.video_widget)
         m_layout.addLayout(controls)
         self.stack.addWidget(self.media_page)
+
+    def _toggle_code_edit(self, editing):
+        if not self.is_editable_text or not self.current_text_path:
+            self.edit_mode_btn.setChecked(False)
+            return
+        if editing:
+            self.text_view.setReadOnly(False)
+            self.text_view.setPlainText(self.raw_text)
+            self.save_code_btn.setEnabled(True)
+            self.code_status_lbl.setText("Editing (Ctrl+S to save)")
+            self.text_view.setFocus()
+        else:
+            self.text_view.setReadOnly(True)
+            self.save_code_btn.setEnabled(False)
+            self.code_status_lbl.setText("Read-Only")
+            numbered = "\n".join("%4d | %s" % (i + 1, line) for i, line in enumerate(self.raw_text.splitlines()))
+            self.text_view.setPlainText(numbered)
+
+    def _save_code_file(self):
+        if not self.edit_mode_btn.isChecked() or not self.current_text_path:
+            return
+        try:
+            updated = self.text_view.toPlainText()
+            with open(self.current_text_path, "w", encoding="utf-8") as f:
+                f.write(updated)
+            self.raw_text = updated
+            self.code_status_lbl.setText("Saved!")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", str(e))
+
+    def _toggle_3d_wireframe(self, enabled):
+        for actor in self.mesh_actors:
+            actor.GetProperty().SetRepresentationToWireframe() if enabled else actor.GetProperty().SetRepresentationToSurface()
+        self.plotter.render()
+
+    def _toggle_3d_bbox(self, enabled):
+        if enabled:
+            self.bbox_actor = self.plotter.add_bounding_box(color="#f9e2af", line_width=1.5)
+        elif self.bbox_actor is not None:
+            self.plotter.remove_actor(self.bbox_actor)
+            self.bbox_actor = None
+        self.plotter.render()
+
+    def _step_pdf_page(self, delta):
+        if not self.pdf_doc:
+            return
+        new_pg = max(1, min(len(self.pdf_doc), self.pdf_page_spin.value() + delta))
+        self.pdf_page_spin.setValue(new_pg)
+
+    def _render_pdf_page(self, page_num):
+        if not self.pdf_doc:
+            return
+        idx = max(0, min(len(self.pdf_doc) - 1, page_num - 1))
+        page = self.pdf_doc.load_page(idx)
+        pix_fitz = page.get_pixmap(dpi=140)
+        img_fmt = QImage.Format_RGBA8888 if pix_fitz.alpha else QImage.Format_RGB888
+        qimg = QImage(pix_fitz.samples, pix_fitz.width, pix_fitz.height, pix_fitz.stride, img_fmt)
+        self.current_pixmap = QPixmap.fromImage(qimg)
+        self._render_pixmap()
 
     def eventFilter(self, obj, event):
         if obj == self.img_scroll.viewport():
@@ -347,7 +490,7 @@ class InspectorPane(QWidget):
             self.img_scroll.setFocus()
         else:
             self.slide_btn.setChecked(False)
-            self.slide_btn.setText("Slideshow (4s)")
+            self.slide_btn.setText("Slide (4s)")
             self.slide_timer.stop()
 
     def step_slideshow(self, delta, from_timer=False):
@@ -357,18 +500,7 @@ class InspectorPane(QWidget):
         next_path = self.slide_images[self.slide_index]
         if not from_timer and self.slide_timer.isActive():
             self.slide_timer.start()
-        self.inspect_path(next_path, _from_slideshow=True)
-
-    def wheelEvent(self, event):
-        if self.stack.currentWidget() == self.img_page and event.modifiers() == Qt.ControlModifier:
-            delta = event.angleDelta().y()
-            if delta > 0:
-                self._adjust_zoom(1.15)
-            elif delta < 0:
-                self._adjust_zoom(0.85)
-            event.accept()
-            return
-        super().wheelEvent(event)
+        self.inspect_path(next_path, from_slide=True)
 
     def _adjust_zoom(self, multiplier):
         if not self.current_pixmap or self.current_pixmap.isNull():
@@ -403,7 +535,7 @@ class InspectorPane(QWidget):
             w = max(1, int(self.current_pixmap.width() * self.zoom_factor))
             h = max(1, int(self.current_pixmap.height() * self.zoom_factor))
             scaled = self.current_pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.zoom_lbl.setText(f"{int(self.zoom_factor * 100)}%")
+            self.zoom_lbl.setText("%d%%" % int(self.zoom_factor * 100))
         self.img_label.setPixmap(scaled)
 
     def _toggle_playback(self):
@@ -431,17 +563,17 @@ class InspectorPane(QWidget):
         cs = rem_ms // 10
         hrs, rem_sec = divmod(total_sec, 3600)
         mins, secs = divmod(rem_sec, 60)
-        return f"{hrs:02d}:{mins:02d}:{secs:02d}.{cs:02d}"
+        return "%02d:%02d:%02d.%02d" % (hrs, mins, secs, cs)
 
     def _on_media_position(self, pos):
         self.seek_slider.setValue(pos)
         dur = self.media_player.duration()
-        self.time_lbl.setText(f"{self._fmt_ms(pos)} / {self._fmt_ms(dur)}")
+        self.time_lbl.setText("%s / %s" % (self._fmt_ms(pos), self._fmt_ms(dur)))
 
     def _on_media_duration(self, dur):
         self.seek_slider.setMaximum(dur)
         pos = self.media_player.position()
-        self.time_lbl.setText(f"{self._fmt_ms(pos)} / {self._fmt_ms(dur)}")
+        self.time_lbl.setText("%s / %s" % (self._fmt_ms(pos), self._fmt_ms(dur)))
 
     def toggle_details(self, checked):
         self.meta_bar.setText("▾ File Details" if checked else "▸ File Details")
@@ -458,15 +590,38 @@ class InspectorPane(QWidget):
         ]
         self.text_view.setPlainText("\n".join(matched))
 
-    def inspect_path(self, path, force_hex=False, show_treemap=False, _from_slideshow=False):
+    def _set_text_page(self, content, path=None, editable=False, lexer_file="plain.txt"):
+        self.edit_mode_btn.blockSignals(True)
+        self.edit_mode_btn.setChecked(False)
+        self.edit_mode_btn.setEnabled(editable)
+        self.edit_mode_btn.blockSignals(False)
+        self.save_code_btn.setEnabled(False)
+        self.code_status_lbl.setText("Read-Only" if editable else "Preview Only")
+        self.text_view.setReadOnly(True)
+        self.current_text_path = path
+        self.is_editable_text = editable
+        self.raw_text = content
+        self.highlighter.set_file(lexer_file)
+        if editable:
+            numbered = "\n".join("%4d | %s" % (i + 1, line) for i, line in enumerate(content.splitlines()))
+            self.text_view.setPlainText(numbered)
+        else:
+            self.text_view.setPlainText(content)
+        self.stack.setCurrentWidget(self.text_page)
+
+    def inspect_path(self, path, force_hex=False, show_treemap=False, from_slide=False):
         if not path or not os.path.exists(path):
             return
 
-        if not _from_slideshow and self.slide_timer.isActive():
+        if not from_slide and self.slide_timer.isActive():
             self.slide_btn.setChecked(False)
 
         self.media_player.stop()
         self.media_player.setSource(QUrl())
+        self.pdf_doc = None
+        for w in self.pdf_widgets:
+            w.hide()
+
         stat = os.stat(path)
         self.meta_panel.setText("Path: %s\nSize: %s bytes" % (path, format(stat.st_size, ",")))
 
@@ -475,15 +630,12 @@ class InspectorPane(QWidget):
                 self.treemap.scan_folder(path)
                 self.stack.setCurrentWidget(self.treemap)
             else:
-                self.highlighter.set_file("plain.txt")
                 items = sorted(os.listdir(path))
-                self.raw_text = "Folder: %s\nTotal items: %d\n\n" % (path, len(items)) + "\n".join(items[:300])
-                self.text_view.setPlainText(self.raw_text)
-                self.stack.setCurrentWidget(self.text_view)
+                listing = "Folder: %s\nTotal items: %d\n\n" % (path, len(items)) + "\n".join(items[:300])
+                self._set_text_page(listing, editable=False)
             return
 
         if force_hex:
-            self.highlighter.set_file("plain.txt")
             with open(path, "rb") as f:
                 data = f.read(4096)
             hex_lines = []
@@ -492,9 +644,7 @@ class InspectorPane(QWidget):
                 hex_part = " ".join("%02x" % b for b in chunk)
                 asc_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
                 hex_lines.append("%08x  %-48s  %s" % (i, hex_part, asc_part))
-            self.raw_text = "\n".join(hex_lines)
-            self.text_view.setPlainText(self.raw_text)
-            self.stack.setCurrentWidget(self.text_view)
+            self._set_text_page("\n".join(hex_lines), editable=False)
             return
 
         ext = os.path.splitext(path)[1].lower()
@@ -504,7 +654,9 @@ class InspectorPane(QWidget):
         arch_exts = (".zip", ".tar", ".gz", ".tgz")
 
         if ext in img_exts:
-            if not _from_slideshow:
+            for w in (self.prev_img_btn, self.slide_btn, self.next_img_btn):
+                w.show()
+            if not from_slide:
                 folder = os.path.dirname(os.path.abspath(path))
                 try:
                     self.slide_images = [
@@ -536,29 +688,38 @@ class InspectorPane(QWidget):
 
         elif ext in model_exts:
             self.plotter.clear()
+            self.mesh_actors = []
+            self.bbox_actor = None
+            self.wireframe_btn.setChecked(False)
+            self.bbox_btn.setChecked(False)
             try:
                 loaded = trimesh.load(path, force="scene" if ext == ".3mf" else None)
+                bounds = loaded.bounds
+                dims = bounds[1] - bounds[0] if bounds is not None else [0.0, 0.0, 0.0]
+                dim_txt = "%.2f x %.2f x %.2f" % (dims[0], dims[1], dims[2])
+                self.dims_3d_lbl.setText("Size: " + dim_txt)
+                self.meta_panel.setText("Path: %s\n3D Dimensions: %s\nSize: %s bytes" % (path, dim_txt, format(stat.st_size, ",")))
+
                 if isinstance(loaded, trimesh.Scene):
                     for name, geom in loaded.geometry.items():
                         if len(geom.vertices) > 0:
                             pv_mesh = pv.wrap(geom)
-                            self.plotter.add_mesh(pv_mesh, color="#6c8ebf", opacity=0.9, smooth_shading=True, show_edges=False)
+                            act = self.plotter.add_mesh(pv_mesh, color="#6c8ebf", opacity=0.9, smooth_shading=True, show_edges=False)
+                            self.mesh_actors.append(act)
                 else:
                     pv_mesh = pv.wrap(loaded)
-                    self.plotter.add_mesh(pv_mesh, color="#6c8ebf", opacity=0.9, smooth_shading=True)
+                    act = self.plotter.add_mesh(pv_mesh, color="#6c8ebf", opacity=0.9, smooth_shading=True)
+                    self.mesh_actors.append(act)
                 self.plotter.add_axes()
                 self.plotter.reset_camera()
                 self.stack.setCurrentWidget(self.plotter_frame)
             except Exception as e:
-                self.highlighter.set_file("plain.txt")
-                self.text_view.setPlainText("3D Load Error: " + str(e))
-                self.stack.setCurrentWidget(self.text_view)
+                self._set_text_page("3D Load Error: " + str(e), editable=False)
 
         elif ext == ".gcode":
             self._render_gcode(path)
 
         elif ext in arch_exts:
-            self.highlighter.set_file("plain.txt")
             lines = ["Archive Contents: " + os.path.basename(path) + "\n"]
             if ext == ".zip":
                 with zipfile.ZipFile(path, "r") as zf:
@@ -566,42 +727,38 @@ class InspectorPane(QWidget):
             else:
                 with tarfile.open(path, "r:*") as tf:
                     lines.extend(tf.getnames()[:300])
-            self.raw_text = "\n".join(lines)
-            self.text_view.setPlainText(self.raw_text)
-            self.stack.setCurrentWidget(self.text_view)
+            self._set_text_page("\n".join(lines), editable=False)
 
         elif ext == ".pdf":
             try:
-                doc = fitz.open(path)
-                page = doc.load_page(0)
-                pix_fitz = page.get_pixmap(dpi=130)
-                img_fmt = QImage.Format_RGBA8888 if pix_fitz.alpha else QImage.Format_RGB888
-                qimg = QImage(pix_fitz.samples, pix_fitz.width, pix_fitz.height, pix_fitz.stride, img_fmt)
-                self.meta_panel.setText("Path: %s\nPDF Pages: %d\nSize: %s bytes" % (path, len(doc), format(stat.st_size, ",")))
-                self.current_pixmap = QPixmap.fromImage(qimg)
+                for w in (self.prev_img_btn, self.slide_btn, self.next_img_btn):
+                    w.hide()
+                self.pdf_doc = fitz.open(path)
+                total_pg = len(self.pdf_doc)
+                self.pdf_page_spin.blockSignals(True)
+                self.pdf_page_spin.setMaximum(max(1, total_pg))
+                self.pdf_page_spin.setValue(1)
+                self.pdf_page_spin.blockSignals(False)
+                self.pdf_total_lbl.setText("/ %d" % total_pg)
+                for w in self.pdf_widgets:
+                    w.show()
+                self.meta_panel.setText("Path: %s\nPDF Pages: %d\nSize: %s bytes" % (path, total_pg, format(stat.st_size, ",")))
                 self.fit_mode = True
                 self.stack.setCurrentWidget(self.img_page)
-                self._render_pixmap()
+                self._render_pdf_page(1)
             except Exception as e:
-                self.highlighter.set_file("plain.txt")
-                self.text_view.setPlainText("PDF Preview Error: " + str(e))
-                self.stack.setCurrentWidget(self.text_view)
+                self._set_text_page("PDF Preview Error: " + str(e), editable=False)
 
         elif ext == ".docx":
             try:
-                self.highlighter.set_file("plain.txt")
                 document = docx.Document(path)
                 paragraphs = [p.text for p in document.paragraphs if p.text.strip()]
-                self.raw_text = "\n\n".join(paragraphs[:200])
-                self.text_view.setPlainText(self.raw_text)
-                self.stack.setCurrentWidget(self.text_view)
+                self._set_text_page("\n\n".join(paragraphs[:200]), editable=False)
             except Exception as e:
-                self.text_view.setPlainText("DOCX Preview Error: " + str(e))
-                self.stack.setCurrentWidget(self.text_view)
+                self._set_text_page("DOCX Preview Error: " + str(e), editable=False)
 
         elif ext == ".xlsx":
             try:
-                self.highlighter.set_file("plain.txt")
                 wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
                 lines = ["Sheets: " + ", ".join(wb.sheetnames) + "\n"]
                 sheet = wb.active
@@ -609,23 +766,21 @@ class InspectorPane(QWidget):
                     row_str = " | ".join(str(cell) if cell is not None else "" for cell in row)
                     if row_str.strip(" |"):
                         lines.append(row_str)
-                self.raw_text = "\n".join(lines)
-                self.text_view.setPlainText(self.raw_text)
-                self.stack.setCurrentWidget(self.text_view)
+                self._set_text_page("\n".join(lines), editable=False)
             except Exception as e:
-                self.text_view.setPlainText("XLSX Preview Error: " + str(e))
-                self.stack.setCurrentWidget(self.text_view)
+                self._set_text_page("XLSX Preview Error: " + str(e), editable=False)
 
         else:
             with open(path, "r", errors="ignore") as f:
-                self.raw_text = f.read(32000)
-            self.highlighter.set_file(path)
-            numbered = "\n".join("%4d | %s" % (i + 1, line) for i, line in enumerate(self.raw_text.splitlines()))
-            self.text_view.setPlainText(numbered)
-            self.stack.setCurrentWidget(self.text_view)
+                content = f.read(64000)
+            self._set_text_page(content, path=path, editable=True, lexer_file=path)
 
     def _render_gcode(self, path):
         self.plotter.clear()
+        self.mesh_actors = []
+        self.bbox_actor = None
+        self.wireframe_btn.setChecked(False)
+        self.bbox_btn.setChecked(False)
         points = []
         x = y = z = 0.0
         coord_re = re.compile(r"([XYZ])([-+]?\d*\.?\d+)")
@@ -644,9 +799,12 @@ class InspectorPane(QWidget):
 
         if len(points) > 1:
             pts = np.array(points)
+            mins, maxs = pts.min(axis=0), pts.max(axis=0)
+            dims = maxs - mins
+            self.dims_3d_lbl.setText("Travel: %.1f x %.1f x %.1f mm" % (dims[0], dims[1], dims[2]))
             poly = pv.lines_from_points(pts)
             poly["Layer Height (Z)"] = pts[:, 2]
-            self.plotter.add_mesh(
+            act = self.plotter.add_mesh(
                 poly,
                 scalars="Layer Height (Z)",
                 cmap="ocean",
@@ -654,6 +812,7 @@ class InspectorPane(QWidget):
                 opacity=0.8,
                 show_scalar_bar=False,
             )
+            self.mesh_actors.append(act)
             self.plotter.add_axes()
             self.plotter.reset_camera()
         self.stack.setCurrentWidget(self.plotter_frame)

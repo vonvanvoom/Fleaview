@@ -1,0 +1,74 @@
+source ~/Base/Base1/fvenv/bin/activate
+cd ~/Base/Base1/Fleaview
+
+python3 -m PyInstaller --onefile --windowed --name Feaview \
+  --icon=icon.png \
+  --add-data "icon.png:." \
+  --collect-all pyvista \
+  --collect-all pyvistaqt \
+  --collect-all vtk \
+  --collect-all pygments \
+  --hidden-import=pymupdf \
+  --hidden-import=docx \
+  --hidden-import=openpyxl \
+  --hidden-import=py7zr \
+  --hidden-import=rarfile \
+  --hidden-import=lxml \
+  --hidden-import=send2trash \
+  main.py
+
+cp dist/fleaview ~/.local/bin/fleaview
+chmod +x ~/.local/bin/fleaview
+
+gh release create v1.1.0 dist/fleaview \
+  --title "Fleaview v1.1.0 (Linux x86_64)" \
+  --notes "## What's New in Fleaview v1.1.0
+- **Image Slideshow (\`F6\` / \`Space\`):** 4-second auto-advance with \`Left\`/\`Right\` arrow fast-forward and rewind.
+- **Image Zoom & Pan:** Mouse-wheel zoom, \`100%\`/\`Fit\` toggles, and click-and-drag panning.
+- **Media Player Controls:** Added **Mute** toggle and live \`hh:mm:ss.ss\` timestamp readout.
+- **Hidden Files & Refresh:** Full navigation into \`.hidden\` folders (\`Ctrl+H\`) and instant view refresh (\`F5\`)."
+
+
+
+#####cd ~/Base/Base1/Fleaview
+
+python3 -c '
+# 1. Add duplicate_finder.py to generate_docs.py
+with open("generate_docs.py", "r", encoding="utf-8") as f:
+    gtext = f.read()
+
+if "duplicate_finder.py" not in gtext:
+    gtext = gtext.replace(
+        "    (\"batch_rename.py\",",
+        "    (\"duplicate_finder.py\", \"SHA-256 Duplicate File Scanner & Safe Trash Cleanup\"),\n    (\"batch_rename.py\",",
+        1
+    )
+    with open("generate_docs.py", "w", encoding="utf-8") as f:
+        f.write(gtext)
+    print("Updated generate_docs.py")
+
+# 2. Update root README.md with v1.2.0 features
+with open("README.md", "r", encoding="utf-8") as f:
+    rtext = f.read()
+
+v12_section = """## What'\''s New in v1.2.0
+
+- **Multi-Page PDF Navigation:** Page scrubber (`◀ Pg` / `Pg ▶` and page spinbox) directly in the Inspector.
+- **3D Viewport Controls:** Toggle **Wireframe**, **Bounding Box**, and **Reset View**, plus live `X × Y × Z` model dimensions.
+- **Inline Code & Text Editor:** Edit code or text files right inside the Inspector and save with `Ctrl+S`.
+- **Interactive Disk Treemap (`Ctrl+D`):** Click any folder block to drill down into subfolders.
+- **Duplicate File Finder:** Scan folders by size and SHA-256 hash (`Edit > Find Duplicate Files...`) and move copies to Trash.
+
+---
+
+## Key Features"""
+
+if "What'\''s New in v1.2.0" not in rtext:
+    rtext = rtext.replace("## Key Features", v12_section, 1)
+    with open("README.md", "w", encoding="utf-8") as f:
+        f.write(rtext)
+    print("Updated README.md")
+'
+
+# 3. Regenerate all markdown files inside docs/
+python3 generate_docs.py

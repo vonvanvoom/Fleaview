@@ -17,6 +17,16 @@
 
 ---
 
+## What's New in v1.2.0
+
+- **Multi-Page PDF Navigation:** Page scrubber (`◀ Pg` / `Pg ▶` and page spinbox) directly in the Inspector.
+- **3D Viewport Controls:** Toggle **Wireframe**, **Bounding Box**, and **Reset View**, plus live `X × Y × Z` model dimensions.
+- **Inline Code & Text Editor:** Edit code or text files right inside the Inspector and save with `Ctrl+S`.
+- **Interactive Disk Treemap (`Ctrl+D`):** Click any folder block to drill down into subfolders.
+- **Duplicate File Finder:** Scan folders by size and SHA-256 hash (`Edit > Find Duplicate Files...`) and move copies to Trash.
+
+---
+
 ## Key Features
 
 - **Multi-Pane & Tabbed Workspace:** Toggle side-by-side (`F3`) or stacked (`Shift+F3`) split panes, drag tabs between panes, and save/restore workspace layouts.
