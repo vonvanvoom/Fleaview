@@ -23,9 +23,9 @@ from pygments.lexers import get_lexer_for_filename, TextLexer
 from pygments.styles import get_style_by_name
 from pygments.util import ClassNotFound
 
-from PySide6.QtCore import Qt, QUrl, QEvent, QTimer, Signal, QRect
+from PySide6.QtCore import Qt, QUrl, QEvent, QTimer, Signal, QRect, QSize
 from PySide6.QtGui import (
-    QPixmap, QPainter, QColor, QFont, QImage, QTransform,
+    QPixmap, QPainter, QColor, QFont, QImage, QTransform, QIcon,
     QSyntaxHighlighter, QTextCharFormat, QKeySequence, QShortcut
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -33,7 +33,7 @@ from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QTextEdit, QLabel, QPushButton, QLineEdit, QFrame, QSlider,
-    QScrollArea, QSpinBox, QMessageBox, QFileDialog, QGraphicsView, QGraphicsScene
+    QScrollArea, QSpinBox, QMessageBox, QFileDialog, QGraphicsView, QGraphicsScene, QListWidget, QListWidgetItem, QSplitter
 )
 
 
@@ -221,6 +221,11 @@ class InspectorPane(QWidget):
         self.slide_btn.setCheckable(True)
         self.slide_btn.toggled.connect(self.toggle_slideshow)
 
+        self.filmstrip_btn = QPushButton("Filmstrip")
+        self.filmstrip_btn.setCheckable(True)
+        self.filmstrip_btn.setToolTip("Show thumbnail strip for images and multi-page PDFs")
+        self.filmstrip_btn.toggled.connect(self._toggle_filmstrip)
+
         self.pdf_prev_btn = QPushButton("◀ Pg")
         self.pdf_prev_btn.clicked.connect(lambda: self._step_pdf_page(-1))
         self.pdf_page_spin = QSpinBox()
@@ -245,6 +250,7 @@ class InspectorPane(QWidget):
         zoom_bar.addWidget(self.next_img_btn, 1)
         for w in self.pdf_widgets:
             zoom_bar.addWidget(w, 1)
+        zoom_bar.addWidget(self.filmstrip_btn, 1)
         zoom_bar.addWidget(self.zoom_lbl)
         img_layout.addLayout(zoom_bar)
 
@@ -278,7 +284,26 @@ class InspectorPane(QWidget):
         self.img_scroll.viewport().installEventFilter(self)
         self.img_scroll.viewport().setCursor(Qt.OpenHandCursor)
         self._drag_pos = None
-        img_layout.addWidget(self.img_scroll)
+        self.filmstrip = QListWidget()
+        self.filmstrip.setViewMode(QListWidget.IconMode)
+        self.filmstrip.setFlow(QListWidget.LeftToRight)
+        self.filmstrip.setWrapping(False)
+        self.filmstrip.setMovement(QListWidget.Static)
+        self.filmstrip.setResizeMode(QListWidget.Adjust)
+        self.filmstrip.setMinimumHeight(76)
+        self.filmstrip.setIconSize(QSize(72, 72))
+        self.filmstrip.setSpacing(6)
+        self.filmstrip.setStyleSheet("QListWidget { background: #181825; color: #cdd6f4; border-top: 1px solid #313244; }")
+        self.filmstrip.itemClicked.connect(self._on_filmstrip_clicked)
+        self.filmstrip.hide()
+
+        self.img_splitter = QSplitter(Qt.Vertical)
+        self.img_splitter.addWidget(self.img_scroll)
+        self.img_splitter.addWidget(self.filmstrip)
+        self.img_splitter.setStretchFactor(0, 1)
+        self.img_splitter.setStretchFactor(1, 0)
+        self.img_splitter.splitterMoved.connect(self._on_filmstrip_resized)
+        img_layout.addWidget(self.img_splitter)
 
         self.current_pixmap = None
         self.current_img_path = None
@@ -607,6 +632,89 @@ class InspectorPane(QWidget):
             self.bbox_actor = None
         self.plotter.render()
 
+    # --- PDF & Image Thumbnail Filmstrip ---
+    def _on_filmstrip_resized(self, _pos=0, _index=0):
+        h = self.filmstrip.height()
+        icon_dim = max(48, min(260, h - 30))
+        self.filmstrip.setIconSize(QSize(icon_dim, icon_dim))
+        for i in range(self.filmstrip.count()):
+            item = self.filmstrip.item(i)
+            src_pix = item.data(Qt.UserRole + 1)
+            if isinstance(src_pix, QPixmap) and not src_pix.isNull():
+                scaled = src_pix.scaled(icon_dim, icon_dim, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                item.setIcon(QIcon(scaled))
+        self.filmstrip.doItemsLayout()
+        if self.fit_mode:
+            self._render_pixmap()
+
+    def _toggle_filmstrip(self, visible):
+        self.filmstrip.setVisible(visible)
+        if visible:
+            total_h = max(300, self.img_splitter.height())
+            self.img_splitter.setSizes([total_h - 120, 120])
+            self._populate_filmstrip()
+            self._on_filmstrip_resized()
+        elif self.fit_mode:
+            self._render_pixmap()
+
+    def _populate_filmstrip(self):
+        if not self.filmstrip_btn.isChecked():
+            return
+        self.filmstrip.clear()
+        icon_dim = max(48, min(260, self.filmstrip.height() - 30))
+
+        if self.pdf_doc is not None:
+            max_pages = min(len(self.pdf_doc), 60)
+            cur_pg = self.pdf_page_spin.value()
+            for idx in range(max_pages):
+                page = self.pdf_doc.load_page(idx)
+                pix_fitz = page.get_pixmap(dpi=72)
+                img_fmt = QImage.Format_RGBA8888 if pix_fitz.alpha else QImage.Format_RGB888
+                qimg = QImage(pix_fitz.samples, pix_fitz.width, pix_fitz.height, pix_fitz.stride, img_fmt)
+                src_pix = QPixmap.fromImage(qimg)
+                scaled = src_pix.scaled(icon_dim, icon_dim, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                item = QListWidgetItem(QIcon(scaled), f"Pg {idx + 1}")
+                item.setData(Qt.UserRole, ("pdf", idx + 1))
+                item.setData(Qt.UserRole + 1, src_pix)
+                self.filmstrip.addItem(item)
+                if (idx + 1) == cur_pg:
+                    self.filmstrip.setCurrentItem(item)
+            return
+
+        if self.slide_images:
+            total = len(self.slide_images)
+            center = max(0, self.slide_index)
+            start = max(0, center - 30)
+            end = min(total, start + 60)
+            for idx in range(start, end):
+                img_p = self.slide_images[idx]
+                pix = QPixmap(img_p)
+                if not pix.isNull():
+                    src_pix = pix.scaled(260, 260, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    thumb = src_pix.scaled(icon_dim, icon_dim, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    icon = QIcon(thumb)
+                else:
+                    src_pix = None
+                    icon = QIcon()
+                item = QListWidgetItem(icon, os.path.basename(img_p)[:14])
+                item.setToolTip(os.path.basename(img_p))
+                item.setData(Qt.UserRole, ("img", idx))
+                item.setData(Qt.UserRole + 1, src_pix)
+                self.filmstrip.addItem(item)
+                if idx == self.slide_index:
+                    self.filmstrip.setCurrentItem(item)
+
+    def _on_filmstrip_clicked(self, item):
+        payload = item.data(Qt.UserRole)
+        if not payload:
+            return
+        kind, val = payload
+        if kind == "pdf":
+            self.pdf_page_spin.setValue(val)
+        elif kind == "img" and 0 <= val < len(self.slide_images):
+            self.slide_index = val
+            self.inspect_path(self.slide_images[val], from_slide=True)
+
     def _step_pdf_page(self, delta):
         if not self.pdf_doc:
             return
@@ -863,6 +971,7 @@ class InspectorPane(QWidget):
             self.fit_mode = True
             self.stack.setCurrentWidget(self.img_page)
             self._render_pixmap()
+            self._populate_filmstrip()
 
         elif ext in media_exts:
             self.current_media_path = path
@@ -942,6 +1051,7 @@ class InspectorPane(QWidget):
                 self.fit_mode = True
                 self.stack.setCurrentWidget(self.img_page)
                 self._render_pdf_page(1)
+                self._populate_filmstrip()
             except Exception as e:
                 self._set_text_page("PDF Preview Error: " + str(e), editable=False)
 
