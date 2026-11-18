@@ -17,6 +17,12 @@
 
 ---
 
+## What's New in v1.3.1
+
+- **Expandable PDF & Image Thumbnail Filmstrip:** Toggleable, drag-resizable horizontal thumbnail strip in the Inspector with live-scaling thumbnails for instant one-click navigation across folder images and multi-page PDF documents.
+
+---
+
 ## What's New in v1.3.0
 
 - **Quick Rotate, Flip & Save As / Rename:** Rotate (`↺ 90°` / `↻ 90°`) and Flip (`Horizontal` / `Vertical`) live on both images and playing videos, complete with an FFmpeg processing pre-warning and custom filename export.
