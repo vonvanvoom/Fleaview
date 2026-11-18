@@ -116,5 +116,5 @@ Detailed per-module code documentation and AI architecture notes are available i
 
 ## Copyright & License
 
-Copyright © 2026 **{gh_user}**.  
+Copyright © 2026 **vonvanvoom**.  
 Source code is released under the [MIT License](./LICENSE). The **Fleaview™** name and custom application icon (`icon.png`) are original works of the author.
