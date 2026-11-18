@@ -17,6 +17,14 @@
 
 ---
 
+## What's New in v1.3.0
+
+- **Quick Rotate, Flip & Save As / Rename:** Rotate (`↺ 90°` / `↻ 90°`) and Flip (`Horizontal` / `Vertical`) live on both images and playing videos, complete with an FFmpeg processing pre-warning and custom filename export.
+- **Right-Click Archive Extraction & Compression:** Extract `.zip`, `.7z`, `.rar`, `.tar`, and `.cab` archives directly via **Extract Here** or **Extract to Subfolder...**, or package any selection via **Compress to `.zip` / `.7z`**.
+- **Justified Preview Controls:** Evenly spaced image and PDF toolbar controls across the Inspector pane.
+
+---
+
 ## What's New in v1.2.0
 
 - **Multi-Page PDF Navigation:** Page scrubber (`◀ Pg` / `Pg ▶` and page spinbox) directly in the Inspector.

@@ -228,6 +228,76 @@ class BrowserTab(QWidget):
         dlg = BatchRenameDialog(paths, self)
         dlg.exec()
 
+    def extract_selected_archive(self, to_subfolder=False):
+        paths = self.selected_paths()
+        if len(paths) != 1 or not self.archive_manager.is_archive(paths[0]):
+            return
+        arch_path = paths[0]
+        base_name = os.path.basename(arch_path)
+        stem = base_name
+        for suf in (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".zip", ".7z", ".rar", ".tar", ".cab"):
+            if stem.lower().endswith(suf):
+                stem = stem[:-len(suf)]
+                break
+
+        if to_subfolder:
+            folder_name, ok = QInputDialog.getText(
+                self, "Extract to Subfolder", "Subfolder name:", text=stem
+            )
+            if not ok or not folder_name.strip():
+                return
+            dest_dir = os.path.join(self.current_dir, folder_name.strip())
+        else:
+            dest_dir = self.current_dir
+
+        try:
+            self.archive_manager.extract_to_destination(arch_path, dest_dir)
+            self.refresh_view()
+        except Exception as e:
+            err_str = str(e).lower()
+            if "password" in err_str or "encrypted" in err_str:
+                pwd, ok = QInputDialog.getText(
+                    self, "Archive Password", f"Enter password for {base_name}:", QLineEdit.Password
+                )
+                if ok and pwd:
+                    try:
+                        self.archive_manager.extract_to_destination(arch_path, dest_dir, password=pwd)
+                        self.refresh_view()
+                        return
+                    except Exception as e2:
+                        QMessageBox.critical(self, "Extraction Error", str(e2))
+                        return
+            QMessageBox.critical(self, "Extraction Error", str(e))
+
+    def compress_selected(self, fmt="zip"):
+        paths = [p for p in self.selected_paths() if p != self.current_dir]
+        if not paths:
+            return
+        default_stem = os.path.splitext(os.path.basename(paths[0]))[0] if len(paths) == 1 else "Archive"
+        arch_name, ok = QInputDialog.getText(
+            self, f"Compress to .{fmt}", "Archive filename:", text=f"{default_stem}.{fmt}"
+        )
+        if not ok or not arch_name.strip():
+            return
+        clean_name = arch_name.strip()
+        if not clean_name.lower().endswith(f".{fmt}"):
+            clean_name += f".{fmt}"
+        out_path = os.path.join(self.current_dir, clean_name)
+
+        if os.path.exists(out_path):
+            reply = QMessageBox.question(
+                self, "Overwrite Archive", f"{clean_name} already exists. Overwrite?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        try:
+            self.archive_manager.compress_paths(paths, out_path)
+            self.refresh_view()
+        except Exception as e:
+            QMessageBox.critical(self, "Compression Error", str(e))
+
     def delete_selected(self, permanent=False):
         paths = self.selected_paths()
         if not paths:
@@ -404,6 +474,13 @@ class BrowserTab(QWidget):
             menu.addAction("Delete Permanently (Shift+Del)", lambda: self.delete_selected(permanent=True))
             menu.addAction("Rename... (F2)", self.rename_selected)
             menu.addAction("Batch Rename... (Ctrl+Shift+R)", self.batch_rename_selected)
+            menu.addSeparator()
+            sel_paths = self.selected_paths()
+            if len(sel_paths) == 1 and self.archive_manager.is_archive(sel_paths[0]):
+                menu.addAction("Extract Here", lambda: self.extract_selected_archive(to_subfolder=False))
+                menu.addAction("Extract to Subfolder...", lambda: self.extract_selected_archive(to_subfolder=True))
+            menu.addAction("Compress to .zip...", lambda: self.compress_selected("zip"))
+            menu.addAction("Compress to .7z...", lambda: self.compress_selected("7z"))
 
         menu.addSeparator()
         term_dir = target_path if os.path.isdir(target_path) else os.path.dirname(target_path)

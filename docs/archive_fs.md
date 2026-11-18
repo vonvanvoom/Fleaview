@@ -99,4 +99,62 @@ class ArchiveManager:
 
     def cleanup(self):
         shutil.rmtree(self.temp_root, ignore_errors=True)
+
+    def is_archive(self, path):
+        if not path or not os.path.isfile(path):
+            return False
+        return path.lower().endswith(
+            (".zip", ".7z", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".cab")
+        )
+
+    def extract_to_destination(self, archive_path, dest_dir, password=None):
+        os.makedirs(dest_dir, exist_ok=True)
+        lower = archive_path.lower()
+        if lower.endswith(".zip"):
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                pwd = password.encode("utf-8") if password else None
+                zf.extractall(dest_dir, pwd=pwd)
+        elif lower.endswith(".7z"):
+            with py7zr.SevenZipFile(archive_path, mode="r", password=password) as szf:
+                szf.extractall(path=dest_dir)
+        elif lower.endswith(".rar"):
+            with rarfile.RarFile(archive_path, "r") as rf:
+                rf.extractall(path=dest_dir, pwd=password)
+        elif lower.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")):
+            with tarfile.open(archive_path, "r:*") as tf:
+                tf.extractall(path=dest_dir)
+        elif lower.endswith(".cab"):
+            if shutil.which("7z"):
+                cmd = ["7z", "x", "-y", f"-o{dest_dir}", archive_path]
+                if password:
+                    cmd.append(f"-p{password}")
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            else:
+                raise RuntimeError("7z command is required to extract .cab archives.")
+        else:
+            raise ValueError(f"Unsupported archive format: {os.path.basename(archive_path)}")
+
+    def compress_paths(self, paths, out_archive_path):
+        lower = out_archive_path.lower()
+        if lower.endswith(".zip"):
+            with zipfile.ZipFile(out_archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for p in paths:
+                    base_parent = os.path.dirname(os.path.abspath(p))
+                    if os.path.isfile(p):
+                        zf.write(p, arcname=os.path.basename(p))
+                    elif os.path.isdir(p):
+                        for root, dirs, files in os.walk(p):
+                            if not dirs and not files:
+                                rel = os.path.relpath(root, base_parent) + "/"
+                                zf.writestr(rel, "")
+                            for fn in files:
+                                full = os.path.join(root, fn)
+                                rel = os.path.relpath(full, base_parent)
+                                zf.write(full, arcname=rel)
+        elif lower.endswith(".7z"):
+            with py7zr.SevenZipFile(out_archive_path, "w") as szf:
+                for p in paths:
+                    szf.writeall(p, arcname=os.path.basename(p))
+        else:
+            raise ValueError("Archive filename must end with .zip or .7z")
 ```

@@ -1,5 +1,7 @@
 import os
 import re
+import shutil
+import subprocess
 import zipfile
 import tarfile
 import numpy as np
@@ -16,15 +18,15 @@ from pygments.util import ClassNotFound
 
 from PySide6.QtCore import Qt, QUrl, QEvent, QTimer, Signal, QRect
 from PySide6.QtGui import (
-    QPixmap, QPainter, QColor, QFont, QImage,
+    QPixmap, QPainter, QColor, QFont, QImage, QTransform,
     QSyntaxHighlighter, QTextCharFormat, QKeySequence, QShortcut
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QTextEdit, QLabel, QPushButton, QLineEdit, QFrame, QSlider,
-    QScrollArea, QSpinBox, QMessageBox
+    QScrollArea, QSpinBox, QMessageBox, QFileDialog, QGraphicsView, QGraphicsScene
 )
 
 
@@ -179,43 +181,39 @@ class InspectorPane(QWidget):
         self.stack = QStackedWidget()
         layout.addWidget(self.stack)
 
-        # Page 0: Image & Multi-Page PDF Preview with Zoom Controls
+        # Page 0: Image & Multi-Page PDF Preview
         self.img_page = QWidget()
         img_layout = QVBoxLayout(self.img_page)
         img_layout.setContentsMargins(0, 0, 0, 0)
 
         zoom_bar = QHBoxLayout()
+        zoom_bar.setSpacing(6)
         self.zoom_out_btn = QPushButton("−")
-        self.zoom_out_btn.setFixedWidth(30)
-        self.zoom_out_btn.setToolTip("Zoom Out")
+        self.zoom_out_btn.setMinimumWidth(32)
         self.zoom_out_btn.clicked.connect(lambda: self._adjust_zoom(0.8))
 
         self.zoom_in_btn = QPushButton("+")
-        self.zoom_in_btn.setFixedWidth(30)
-        self.zoom_in_btn.setToolTip("Zoom In")
+        self.zoom_in_btn.setMinimumWidth(32)
         self.zoom_in_btn.clicked.connect(lambda: self._adjust_zoom(1.25))
 
         self.zoom_100_btn = QPushButton("100%")
-        self.zoom_100_btn.setFixedWidth(48)
         self.zoom_100_btn.clicked.connect(self._zoom_actual)
 
         self.zoom_fit_btn = QPushButton("Fit")
-        self.zoom_fit_btn.setFixedWidth(40)
         self.zoom_fit_btn.clicked.connect(self._zoom_fit)
 
         self.prev_img_btn = QPushButton("◀")
-        self.prev_img_btn.setFixedWidth(28)
+        self.prev_img_btn.setMinimumWidth(32)
         self.prev_img_btn.clicked.connect(lambda: self.step_slideshow(-1))
 
         self.next_img_btn = QPushButton("▶")
-        self.next_img_btn.setFixedWidth(28)
+        self.next_img_btn.setMinimumWidth(32)
         self.next_img_btn.clicked.connect(lambda: self.step_slideshow(1))
 
         self.slide_btn = QPushButton("Slide (4s)")
         self.slide_btn.setCheckable(True)
         self.slide_btn.toggled.connect(self.toggle_slideshow)
 
-        # PDF Page Controls (Visible only for PDFs)
         self.pdf_prev_btn = QPushButton("◀ Pg")
         self.pdf_prev_btn.clicked.connect(lambda: self._step_pdf_page(-1))
         self.pdf_page_spin = QSpinBox()
@@ -231,19 +229,38 @@ class InspectorPane(QWidget):
         self.zoom_lbl = QLabel("Fit")
         self.zoom_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        zoom_bar.addWidget(self.zoom_out_btn)
-        zoom_bar.addWidget(self.zoom_in_btn)
-        zoom_bar.addWidget(self.zoom_100_btn)
-        zoom_bar.addWidget(self.zoom_fit_btn)
-        zoom_bar.addSpacing(6)
-        zoom_bar.addWidget(self.prev_img_btn)
-        zoom_bar.addWidget(self.slide_btn)
-        zoom_bar.addWidget(self.next_img_btn)
+        zoom_bar.addWidget(self.zoom_out_btn, 1)
+        zoom_bar.addWidget(self.zoom_in_btn, 1)
+        zoom_bar.addWidget(self.zoom_100_btn, 1)
+        zoom_bar.addWidget(self.zoom_fit_btn, 1)
+        zoom_bar.addWidget(self.prev_img_btn, 1)
+        zoom_bar.addWidget(self.slide_btn, 2)
+        zoom_bar.addWidget(self.next_img_btn, 1)
         for w in self.pdf_widgets:
-            zoom_bar.addWidget(w)
-        zoom_bar.addStretch()
+            zoom_bar.addWidget(w, 1)
         zoom_bar.addWidget(self.zoom_lbl)
         img_layout.addLayout(zoom_bar)
+
+        self.img_edit_bar = QHBoxLayout()
+        self.rot_left_btn = QPushButton("↺ 90°")
+        self.rot_left_btn.clicked.connect(lambda: self._transform_image(rotate_deg=-90))
+        self.rot_right_btn = QPushButton("↻ 90°")
+        self.rot_right_btn.clicked.connect(lambda: self._transform_image(rotate_deg=90))
+        self.flip_h_btn = QPushButton("⇄ Flip H")
+        self.flip_h_btn.clicked.connect(lambda: self._transform_image(flip_h=True))
+        self.flip_v_btn = QPushButton("⇅ Flip V")
+        self.flip_v_btn.clicked.connect(lambda: self._transform_image(flip_v=True))
+        self.save_img_btn = QPushButton("Save As / Rename...")
+        self.save_img_btn.clicked.connect(self._save_image_copy)
+
+        self.img_edit_widgets = (
+            self.rot_left_btn, self.rot_right_btn,
+            self.flip_h_btn, self.flip_v_btn, self.save_img_btn
+        )
+        self.img_edit_bar.setSpacing(6)
+        for w in self.img_edit_widgets:
+            self.img_edit_bar.addWidget(w, 1)
+        img_layout.addLayout(self.img_edit_bar)
 
         self.img_scroll = QScrollArea()
         self.img_scroll.setWidgetResizable(True)
@@ -257,6 +274,7 @@ class InspectorPane(QWidget):
         img_layout.addWidget(self.img_scroll)
 
         self.current_pixmap = None
+        self.current_img_path = None
         self.zoom_factor = 1.0
         self.fit_mode = True
         self.pdf_doc = None
@@ -302,7 +320,7 @@ class InspectorPane(QWidget):
         save_sc.activated.connect(self._save_code_file)
         self.stack.addWidget(self.text_page)
 
-        # Page 2: Interactive 3D PyVista Viewport with Wireframe & Bounding Box
+        # Page 2: Interactive 3D PyVista Viewport
         self.plotter_frame = QFrame()
         p_layout = QVBoxLayout(self.plotter_frame)
         p_layout.setContentsMargins(0, 0, 0, 0)
@@ -339,32 +357,63 @@ class InspectorPane(QWidget):
         self.treemap.folder_clicked.connect(self.navigate_requested.emit)
         self.stack.addWidget(self.treemap)
 
-        # Page 4: Audio & Video Preview Player
+        # Page 4: Audio & Video Preview Player with Rotate, Flip & Save Copy
         self.media_page = QWidget()
         m_layout = QVBoxLayout(self.media_page)
         m_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.video_widget = QVideoWidget()
+        media_edit_bar = QHBoxLayout()
+        self.vid_rot_l_btn = QPushButton("↺ 90°")
+        self.vid_rot_l_btn.clicked.connect(lambda: self._queue_media_transform(rot_delta=-90))
+        self.vid_rot_r_btn = QPushButton("↻ 90°")
+        self.vid_rot_r_btn.clicked.connect(lambda: self._queue_media_transform(rot_delta=90))
+        self.vid_flip_h_btn = QPushButton("⇄ Flip H")
+        self.vid_flip_h_btn.setCheckable(True)
+        self.vid_flip_h_btn.toggled.connect(lambda _: self._update_media_transform_label())
+        self.vid_flip_v_btn = QPushButton("⇅ Flip V")
+        self.vid_flip_v_btn.setCheckable(True)
+        self.vid_flip_v_btn.toggled.connect(lambda _: self._update_media_transform_label())
+        self.save_media_btn = QPushButton("Save As / Rename...")
+        self.save_media_btn.clicked.connect(self._save_media_copy)
+
+        self.media_tx_lbl = QLabel("Transform: None")
+        self.current_media_path = None
+        self.media_rot_deg = 0
+
+        media_edit_bar.addWidget(self.vid_rot_l_btn)
+        media_edit_bar.addWidget(self.vid_rot_r_btn)
+        media_edit_bar.addWidget(self.vid_flip_h_btn)
+        media_edit_bar.addWidget(self.vid_flip_v_btn)
+        media_edit_bar.addWidget(self.save_media_btn)
+        media_edit_bar.addStretch()
+        media_edit_bar.addWidget(self.media_tx_lbl)
+        m_layout.addLayout(media_edit_bar)
+
+        self.video_scene = QGraphicsScene(self)
+        self.video_view = QGraphicsView(self.video_scene)
+        self.video_view.setStyleSheet("background: #11111b; border: none;")
+        self.video_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.video_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.video_item = QGraphicsVideoItem()
+        self.video_scene.addItem(self.video_item)
+        self.video_item.nativeSizeChanged.connect(self._fit_video_item)
+
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.media_player.setAudioOutput(self.audio_output)
-        self.media_player.setVideoOutput(self.video_widget)
+        self.media_player.setVideoOutput(self.video_item)
 
         controls = QHBoxLayout()
         self.play_btn = QPushButton("Play / Pause")
         self.play_btn.clicked.connect(self._toggle_playback)
-
         self.mute_btn = QPushButton("Mute")
         self.mute_btn.setCheckable(True)
         self.mute_btn.toggled.connect(self._toggle_mute)
-
         self.loop_btn = QPushButton("Loop: Off")
         self.loop_btn.setCheckable(True)
         self.loop_btn.toggled.connect(self._toggle_loop)
-
         self.time_lbl = QLabel("00:00:00.00 / 00:00:00.00")
         self.time_lbl.setFont(QFont("Monospace", 9))
-
         self.seek_slider = QSlider(Qt.Horizontal)
         self.seek_slider.sliderMoved.connect(self.media_player.setPosition)
         self.media_player.positionChanged.connect(self._on_media_position)
@@ -375,10 +424,139 @@ class InspectorPane(QWidget):
         controls.addWidget(self.loop_btn)
         controls.addWidget(self.seek_slider)
         controls.addWidget(self.time_lbl)
-
-        m_layout.addWidget(self.video_widget)
+        m_layout.addWidget(self.video_view)
         m_layout.addLayout(controls)
         self.stack.addWidget(self.media_page)
+
+    def _transform_image(self, rotate_deg=0, flip_h=False, flip_v=False):
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+        tx = QTransform()
+        if rotate_deg:
+            tx.rotate(rotate_deg)
+        if flip_h or flip_v:
+            tx.scale(-1.0 if flip_h else 1.0, -1.0 if flip_v else 1.0)
+        self.current_pixmap = self.current_pixmap.transformed(tx, Qt.SmoothTransformation)
+        self._render_pixmap()
+
+    def _save_image_copy(self):
+        if not self.current_pixmap or self.current_pixmap.isNull():
+            return
+        base_path = self.current_img_path or os.path.expanduser("~/image.png")
+        stem, ext = os.path.splitext(base_path)
+        if not ext or ext.lower() == ".svg":
+            ext = ".png"
+        suggested = f"{stem}_edited{ext}"
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Image Copy / Rename", suggested,
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp);;All Files (*)"
+        )
+        if not out_path:
+            return
+        if self.current_pixmap.save(out_path):
+            self.navigate_requested.emit(os.path.dirname(out_path))
+            QMessageBox.information(self, "Saved", f"Saved image to:\n{out_path}")
+        else:
+            QMessageBox.critical(self, "Save Error", "Could not save image to selected format.")
+
+    def _fit_video_item(self, _size=None):
+        nat = self.video_item.nativeSize()
+        if nat.width() <= 0 or nat.height() <= 0:
+            return
+        self.video_item.setSize(nat)
+        self.video_item.setTransformOriginPoint(nat.width() / 2.0, nat.height() / 2.0)
+        tx = QTransform()
+        sx = -1.0 if self.vid_flip_h_btn.isChecked() else 1.0
+        sy = -1.0 if self.vid_flip_v_btn.isChecked() else 1.0
+        tx.translate(nat.width() / 2.0, nat.height() / 2.0)
+        tx.rotate(self.media_rot_deg)
+        tx.scale(sx, sy)
+        tx.translate(-nat.width() / 2.0, -nat.height() / 2.0)
+        self.video_item.setTransform(tx)
+        self.video_view.setSceneRect(self.video_item.mapRectToScene(self.video_item.boundingRect()))
+        self.video_view.fitInView(self.video_view.sceneRect(), Qt.KeepAspectRatio)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.stack.currentWidget() == self.media_page:
+            self._fit_video_item()
+
+    def _queue_media_transform(self, rot_delta=0):
+        self.media_rot_deg = (self.media_rot_deg + rot_delta) % 360
+        self._update_media_transform_label()
+
+    def _update_media_transform_label(self):
+        parts = []
+        if self.media_rot_deg:
+            parts.append(f"Rot {self.media_rot_deg}°")
+        if self.vid_flip_h_btn.isChecked():
+            parts.append("Flip H")
+        if self.vid_flip_v_btn.isChecked():
+            parts.append("Flip V")
+        self.media_tx_lbl.setText("Transform: " + (", ".join(parts) if parts else "None"))
+        self._fit_video_item()
+
+    def _save_media_copy(self):
+        if not self.current_media_path or not os.path.exists(self.current_media_path):
+            return
+        if not shutil.which("ffmpeg"):
+            QMessageBox.critical(self, "FFmpeg Missing", "FFmpeg is not installed on this system.")
+            return
+
+        stem, ext = os.path.splitext(self.current_media_path)
+        suggested = f"{stem}_edited{ext}"
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Media Copy / Rename", suggested,
+            "Media Files (*.mp4 *.mkv *.webm *.mov *.avi *.mp3 *.wav *.ogg *.flac);;All Files (*)"
+        )
+        if not out_path:
+            return
+
+        vf_filters = []
+        if self.media_rot_deg == 90:
+            vf_filters.append("transpose=1")
+        elif self.media_rot_deg == 180:
+            vf_filters.extend(["transpose=1", "transpose=1"])
+        elif self.media_rot_deg == 270:
+            vf_filters.append("transpose=2")
+        if self.vid_flip_h_btn.isChecked():
+            vf_filters.append("hflip")
+        if self.vid_flip_v_btn.isChecked():
+            vf_filters.append("vflip")
+
+        size_mb = os.path.getsize(self.current_media_path) / (1024 * 1024)
+        warn_msg = (
+            f"File size: {size_mb:.1f} MB\n\n"
+            "Converting or re-encoding a large media file with FFmpeg may take a while "
+            "and temporarily slow down system performance.\n\n"
+            "Do you want to proceed?"
+        )
+        reply = QMessageBox.warning(
+            self, "FFmpeg Processing Notice", warn_msg,
+            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Ok
+        )
+        if reply != QMessageBox.Ok:
+            return
+
+        cmd = ["ffmpeg", "-y", "-i", self.current_media_path]
+        if vf_filters:
+            cmd.extend(["-vf", ",".join(vf_filters), "-c:a", "copy"])
+        else:
+            cmd.extend(["-c", "copy"])
+        cmd.append(out_path)
+
+        try:
+            self.media_tx_lbl.setText("Saving...")
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self._update_media_transform_label()
+            if res.returncode == 0:
+                self.navigate_requested.emit(os.path.dirname(out_path))
+                QMessageBox.information(self, "Saved", f"Saved media file to:\n{out_path}")
+            else:
+                QMessageBox.critical(self, "FFmpeg Error", res.stderr[-500:])
+        except Exception as e:
+            self._update_media_transform_label()
+            QMessageBox.critical(self, "Error", str(e))
 
     def _toggle_code_edit(self, editing):
         if not self.is_editable_text or not self.current_text_path:
@@ -650,11 +828,11 @@ class InspectorPane(QWidget):
         ext = os.path.splitext(path)[1].lower()
         img_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg")
         media_exts = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".mp3", ".wav", ".ogg", ".flac", ".m4a")
-        model_exts = (".stl", ".obj", ".ply", ".gltf", ".glb", ".3mf", ".dae")
-        arch_exts = (".zip", ".tar", ".gz", ".tgz")
 
         if ext in img_exts:
             for w in (self.prev_img_btn, self.slide_btn, self.next_img_btn):
+                w.show()
+            for w in self.img_edit_widgets:
                 w.show()
             if not from_slide:
                 folder = os.path.dirname(os.path.abspath(path))
@@ -670,23 +848,31 @@ class InspectorPane(QWidget):
                     self.slide_images = [path]
                     self.slide_index = 0
             pix = QPixmap(path)
-            info = "Path: %s\nDimensions: %dx%d px\nSize: %s bytes" % (
-                path, pix.width(), pix.height(), format(stat.st_size, ",")
-            )
-            self.meta_panel.setText(info)
+            dim_s = "%dx%d px" % (pix.width(), pix.height())
+            sz_s = format(stat.st_size, ",")
+            self.meta_panel.setText("Path: %s\nDimensions: %s\nSize: %s bytes" % (path, dim_s, sz_s))
             self.current_pixmap = pix
+            self.current_img_path = path
             self.fit_mode = True
             self.stack.setCurrentWidget(self.img_page)
             self._render_pixmap()
 
         elif ext in media_exts:
+            self.current_media_path = path
+            self.media_rot_deg = 0
+            self.vid_flip_h_btn.setChecked(False)
+            self.vid_flip_v_btn.setChecked(False)
+            self._update_media_transform_label()
+            is_video = ext in (".mp4", ".mkv", ".webm", ".avi", ".mov")
+            for w in (self.vid_rot_l_btn, self.vid_rot_r_btn, self.vid_flip_h_btn, self.vid_flip_v_btn, self.media_tx_lbl):
+                w.setVisible(is_video)
             self.media_player.setSource(QUrl.fromLocalFile(path))
             self.audio_output.setVolume(0.75)
             self.media_player.setLoops(QMediaPlayer.Loops.Infinite if self.loop_btn.isChecked() else QMediaPlayer.Loops.Once)
             self.stack.setCurrentWidget(self.media_page)
             self.media_player.play()
 
-        elif ext in model_exts:
+        elif ext in (".stl", ".obj", ".ply", ".gltf", ".glb", ".3mf", ".dae"):
             self.plotter.clear()
             self.mesh_actors = []
             self.bbox_actor = None
@@ -719,7 +905,7 @@ class InspectorPane(QWidget):
         elif ext == ".gcode":
             self._render_gcode(path)
 
-        elif ext in arch_exts:
+        elif ext in (".zip", ".tar", ".gz", ".tgz"):
             lines = ["Archive Contents: " + os.path.basename(path) + "\n"]
             if ext == ".zip":
                 with zipfile.ZipFile(path, "r") as zf:
@@ -733,6 +919,9 @@ class InspectorPane(QWidget):
             try:
                 for w in (self.prev_img_btn, self.slide_btn, self.next_img_btn):
                     w.hide()
+                for w in self.img_edit_widgets:
+                    w.hide()
+                self.current_img_path = None
                 self.pdf_doc = fitz.open(path)
                 total_pg = len(self.pdf_doc)
                 self.pdf_page_spin.blockSignals(True)
@@ -815,4 +1004,5 @@ class InspectorPane(QWidget):
             self.mesh_actors.append(act)
             self.plotter.add_axes()
             self.plotter.reset_camera()
-        self.stack.setCurrentWidget(self.plotter_frame)
+            self.stack.setCurrentWidget(self.plotter_frame)
+
